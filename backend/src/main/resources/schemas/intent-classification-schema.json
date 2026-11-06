@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "intent": {
+      "type": "string",
+      "enum": [
+        "TASK_LIST",
+        "CREATE_TASK",
+        "LEAVE_BALANCE",
+        "PROJECT_SUMMARY",
+        "TASK_PLANNING",
+        "OTHER"
+      ]
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "requiresTool": {
+      "type": "boolean"
+    },
+    "response": {
+      "type": "string"
+    },
+    "entities": {
+      "type": "object",
+      "properties": {
+        "taskName": {
+          "type": ["string", "null"]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": ["HIGH", "MEDIUM", "LOW"]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dueDate": {
+          "type": ["string", "null"]
+        },
+        "projectName": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["taskName", "priority", "dueDate", "projectName"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["intent", "confidence", "requiresTool", "response", "entities"],
+  "additionalProperties": false
+}

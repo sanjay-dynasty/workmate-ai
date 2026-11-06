@@ -1,0 +1,107 @@
+[
+  {
+    "id": 1,
+    "input": "Show my pending tasks",
+    "expectedIntent": "TASK_LIST"
+  },
+  {
+    "id": 2,
+    "input": "List all my incomplete assignments",
+    "expectedIntent": "TASK_LIST"
+  },
+  {
+    "id": 3,
+    "input": "What work do I still need to finish?",
+    "expectedIntent": "TASK_LIST"
+  },
+  {
+    "id": 4,
+    "input": "Display my open tasks",
+    "expectedIntent": "TASK_LIST"
+  },
+
+  {
+    "id": 5,
+    "input": "Create a task for Java preparation",
+    "expectedIntent": "CREATE_TASK"
+  },
+  {
+    "id": 6,
+    "input": "Add a new task to complete Spring Boot training",
+    "expectedIntent": "CREATE_TASK"
+  },
+  {
+    "id": 7,
+    "input": "I need to add documentation work to my task list",
+    "expectedIntent": "CREATE_TASK"
+  },
+  {
+    "id": 8,
+    "input": "Create a high priority task due tomorrow",
+    "expectedIntent": "CREATE_TASK"
+  },
+
+  {
+    "id": 9,
+    "input": "How many leaves do I have?",
+    "expectedIntent": "LEAVE_BALANCE"
+  },
+  {
+    "id": 10,
+    "input": "Show my remaining leave balance",
+    "expectedIntent": "LEAVE_BALANCE"
+  },
+  {
+    "id": 11,
+    "input": "How much annual leave is available?",
+    "expectedIntent": "LEAVE_BALANCE"
+  },
+
+  {
+    "id": 12,
+    "input": "Summarize my current project",
+    "expectedIntent": "PROJECT_SUMMARY"
+  },
+  {
+    "id": 13,
+    "input": "Give me an overview of project progress",
+    "expectedIntent": "PROJECT_SUMMARY"
+  },
+  {
+    "id": 14,
+    "input": "What are the important updates in my project?",
+    "expectedIntent": "PROJECT_SUMMARY"
+  },
+
+  {
+    "id": 15,
+    "input": "Help me prioritize today's work",
+    "expectedIntent": "TASK_PLANNING"
+  },
+  {
+    "id": 16,
+    "input": "Prepare a schedule for my pending tasks",
+    "expectedIntent": "TASK_PLANNING"
+  },
+  {
+    "id": 17,
+    "input": "Which task should I complete first?",
+    "expectedIntent": "TASK_PLANNING"
+  },
+
+  {
+    "id": 18,
+    "input": "Explain the difference between Java and Python",
+    "expectedIntent": "OTHER"
+  },
+  {
+    "id": 19,
+    "input": "What is Generative AI?",
+    "expectedIntent": "OTHER"
+  },
+  {
+    "id": 20,
+    "input": "Tell me a joke",
+    "expectedIntent": "OTHER"
+  }
+]
