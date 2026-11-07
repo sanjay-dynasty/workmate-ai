@@ -1,3 +1,4 @@
+
 package com.workmate.backend.service;
 
 import java.util.ArrayList;
@@ -25,6 +26,7 @@ public class AgenticChatService {
     private final WorkMateSystemPrompt workMateSystemPrompt;
     private final ObjectMapper objectMapper;
     private final String model;
+    private final String trustedEmployeeId;
 
     public AgenticChatService(
             ClaudeService claudeService,
@@ -32,7 +34,8 @@ public class AgenticChatService {
             ToolExecutionService toolExecutionService,
             WorkMateSystemPrompt workMateSystemPrompt,
             ObjectMapper objectMapper,
-            @Value("${anthropic.model}") String model) {
+            @Value("${anthropic.model}") String model,
+            @Value("${workmate.demo-employee-id:EMP001}") String trustedEmployeeId) {
 
         this.claudeService = claudeService;
         this.toolDefinitions = toolDefinitions;
@@ -40,6 +43,7 @@ public class AgenticChatService {
         this.workMateSystemPrompt = workMateSystemPrompt;
         this.objectMapper = objectMapper;
         this.model = model;
+        this.trustedEmployeeId = trustedEmployeeId;
     }
 
     public AgenticChatResponse chat(String userMessage) {
@@ -47,6 +51,12 @@ public class AgenticChatService {
         if (userMessage == null || userMessage.isBlank()) {
             throw new IllegalArgumentException(
                     "User message cannot be empty.");
+        }
+
+        if (trustedEmployeeId == null
+                || trustedEmployeeId.isBlank()) {
+            throw new IllegalStateException(
+                    "Trusted employee identity is not configured.");
         }
 
         // Conversation history for this request.
@@ -68,21 +78,24 @@ public class AgenticChatService {
 
             requestBody.put("model", model);
             requestBody.put("max_tokens", 1500);
+
             requestBody.put(
                     "system",
                     workMateSystemPrompt.getChatSystemPrompt()
                             + "\n\n<employee_context>"
-                            + "\nCurrent demo employee ID: EMP001"
+                            + "\nCurrent demo employee ID: "
+                            + trustedEmployeeId
                             + "\nUse this employee ID whenever a tool requires employeeId."
                             + "\nDo not ask the user for their employee ID."
                             + "\n</employee_context>");
+
             requestBody.put("tools", tools);
             requestBody.put("messages", messages);
 
             // Send request to Claude.
             JsonNode response = claudeService.sendMessagesRequest(requestBody);
 
-            if (response == null) {
+            if (response == null || response.isNull()) {
                 throw new IllegalStateException(
                         "Empty response received from Claude.");
             }
@@ -121,6 +134,7 @@ public class AgenticChatService {
 
                 List<Map<String, Object>> toolResults = new ArrayList<>();
 
+                // Process every tool_use block in Claude's response.
                 for (JsonNode block : response.path("content")) {
 
                     if (!"tool_use".equals(
@@ -142,10 +156,12 @@ public class AgenticChatService {
                             new TypeReference<>() {
                             });
 
-                    // Execute the Java backend operation.
+                    // Execute the Java backend operation using
+                    // the server-controlled employee identity.
                     ToolExecutionResult result = toolExecutionService.execute(
                             toolName,
-                            input);
+                            input,
+                            trustedEmployeeId);
 
                     totalToolCalls++;
 
@@ -154,6 +170,7 @@ public class AgenticChatService {
 
                     try {
                         resultJson = objectMapper.writeValueAsString(result);
+
                     } catch (Exception exception) {
                         throw new IllegalStateException(
                                 "Unable to serialize tool result.",
@@ -176,11 +193,11 @@ public class AgenticChatService {
 
                 if (toolResults.isEmpty()) {
                     throw new IllegalStateException(
-                            "Claude requested tool use but no valid " +
-                                    "tool_use blocks were found.");
+                            "Claude requested tool use but no valid "
+                                    + "tool_use blocks were found.");
                 }
 
-                // Send tool results back to Claude.
+                // Send all tool results back to Claude.
                 messages.add(Map.of(
                         "role", "user",
                         "content", toolResults));
@@ -189,7 +206,9 @@ public class AgenticChatService {
                 continue;
             }
 
+            // Claude refused the request.
             if ("refusal".equals(stopReason)) {
+
                 return new AgenticChatResponse(
                         extractText(response),
                         response.path("model").asText(),
@@ -206,6 +225,10 @@ public class AgenticChatService {
         throw new IllegalStateException(
                 "Agentic execution ended without a final answer.");
     }
+
+    // --------------------------------------------------
+    // Extract text blocks from Claude's response
+    // --------------------------------------------------
 
     private String extractText(JsonNode response) {
 
@@ -225,5 +248,4 @@ public class AgenticChatService {
 
         return String.join("\n", textBlocks);
     }
-
 }

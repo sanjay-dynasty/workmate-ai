@@ -1,6 +1,8 @@
 package com.workmate.backend.service;
 
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -17,62 +19,123 @@ public class ToolExecutionService {
     private final TaskService taskService;
     private final EmployeeService employeeService;
 
-    public ToolExecutionService(TaskService taskService, EmployeeService employeeService) {
+    private static final Set<String> EMPLOYEE_SCOPED_TOOLS = Set.of(
+            "get_pending_tasks",
+            "create_task",
+            "update_task",
+            "get_leave_balance",
+            "get_employee_profile");
+
+    private static final Set<String> VALID_PRIORITIES = Set.of(
+            "HIGH", "MEDIUM", "LOW");
+
+    public ToolExecutionService(
+            TaskService taskService,
+            EmployeeService employeeService) {
+
         this.taskService = taskService;
         this.employeeService = employeeService;
     }
 
+    /**
+     * Execute without trusted identity.
+     *
+     * Employee-scoped tools are rejected through this overload.
+     * Use the trusted identity overload for employee operations.
+     */
     public ToolExecutionResult execute(
             String toolName,
             Map<String, Object> input) {
 
+        return execute(toolName, input, null);
+    }
+
+    /**
+     * Execute a Claude tool using server-controlled employee identity.
+     */
+    public ToolExecutionResult execute(
+            String toolName,
+            Map<String, Object> input,
+            String trustedEmployeeId) {
+
+        String safeToolName = toolName == null ? "unknown" : toolName;
+
         try {
             if (toolName == null || toolName.isBlank()) {
-                throw new IllegalArgumentException(
-                        "Tool name is required.");
+                throw new IllegalArgumentException();
             }
 
             if (input == null) {
-                throw new IllegalArgumentException(
-                        "Tool input is required.");
+                throw new IllegalArgumentException();
+            }
+
+            // Reject unsupported tools before processing arguments.
+            if (!isSupportedTool(toolName)) {
+                throw new IllegalArgumentException();
+            }
+
+            // Never trust employee identity supplied by Claude or clients.
+            Map<String, Object> safeInput = new HashMap<>(input);
+
+            if (EMPLOYEE_SCOPED_TOOLS.contains(toolName)) {
+
+                if (trustedEmployeeId == null
+                        || trustedEmployeeId.isBlank()) {
+                    throw new IllegalArgumentException();
+                }
+
+                safeInput.put("employeeId", trustedEmployeeId);
             }
 
             Object result = switch (toolName) {
 
                 case "get_pending_tasks" ->
-                    getPendingTasks(input);
+                    getPendingTasks(safeInput);
 
                 case "create_task" ->
-                    createTask(input);
+                    createTask(safeInput);
 
                 case "update_task" ->
-                    updateTask(input);
+                    updateTask(safeInput);
 
                 case "get_leave_balance" ->
-                    getLeaveBalance(input);
+                    getLeaveBalance(safeInput);
 
                 case "search_documents" ->
-                    searchDocuments(input);
+                    searchDocuments(safeInput);
 
                 case "get_employee_profile" ->
-                    getEmployeeProfile(input);
+                    getEmployeeProfile(safeInput);
 
-                default -> throw new IllegalArgumentException(
-                        "Unsupported tool: " + toolName);
+                default -> throw new IllegalArgumentException();
             };
 
-            return ToolExecutionResult.success(
-                    toolName,
-                    result);
+            return ToolExecutionResult.success(toolName, result);
+
+        } catch (IllegalArgumentException exception) {
+
+            return ToolExecutionResult.failure(
+                    safeToolName,
+                    "Invalid tool request or arguments.");
 
         } catch (Exception exception) {
 
+            // Do not expose internal exception messages to Claude or clients.
             return ToolExecutionResult.failure(
-                    toolName,
-                    exception.getMessage() == null
-                            ? "Tool execution failed."
-                            : exception.getMessage());
+                    safeToolName,
+                    "The requested operation could not be completed.");
         }
+    }
+
+    private boolean isSupportedTool(String toolName) {
+
+        return Set.of(
+                "get_pending_tasks",
+                "create_task",
+                "update_task",
+                "get_leave_balance",
+                "search_documents",
+                "get_employee_profile").contains(toolName);
     }
 
     // --------------------------------------------------
@@ -117,7 +180,7 @@ public class ToolExecutionService {
 
         String employeeId = requiredString(input, "employeeId");
         String taskName = requiredString(input, "taskName");
-        String priority = requiredString(input, "priority");
+        String priority = requiredPriority(input, "priority");
 
         String description = optionalString(input, "description");
         LocalDate dueDate = optionalDate(input, "dueDate");
@@ -155,20 +218,19 @@ public class ToolExecutionService {
                         "priority"));
 
         long id = requiredLong(input, "id");
-        String employeeId = requiredString(input, "employeeId");
 
+        String employeeId = requiredString(input, "employeeId");
         String taskName = requiredString(input, "taskName");
-        String priority = requiredString(input, "priority");
+        String priority = requiredPriority(input, "priority");
 
         String description = optionalString(input, "description");
         LocalDate dueDate = optionalDate(input, "dueDate");
 
-        // Verify ownership before updating.
+        // Verify that the task belongs to the trusted employee.
         TaskResponse existingTask = taskService.getTaskById(id);
 
         if (!existingTask.employeeId().equals(employeeId)) {
-            throw new IllegalArgumentException(
-                    "You are not authorized to update this task.");
+            throw new IllegalArgumentException();
         }
 
         CreateTaskRequest request = new CreateTaskRequest(
@@ -212,6 +274,10 @@ public class ToolExecutionService {
 
         String query = requiredString(input, "query");
 
+        if (query.length() > 200) {
+            throw new IllegalArgumentException();
+        }
+
         return employeeService.searchDocuments(query);
     }
 
@@ -233,7 +299,7 @@ public class ToolExecutionService {
     }
 
     // --------------------------------------------------
-    // Argument validation helpers
+    // Argument validation
     // --------------------------------------------------
 
     private void validateArguments(
@@ -242,16 +308,16 @@ public class ToolExecutionService {
             Set<String> required) {
 
         for (String key : required) {
+
             if (!input.containsKey(key) || input.get(key) == null) {
-                throw new IllegalArgumentException(
-                        "Missing required argument: " + key);
+                throw new IllegalArgumentException();
             }
         }
 
         for (String key : input.keySet()) {
+
             if (!allowed.contains(key)) {
-                throw new IllegalArgumentException(
-                        "Unexpected argument: " + key);
+                throw new IllegalArgumentException();
             }
         }
     }
@@ -265,11 +331,16 @@ public class ToolExecutionService {
         if (!(value instanceof String stringValue)
                 || stringValue.isBlank()) {
 
-            throw new IllegalArgumentException(
-                    "Invalid or missing string argument: " + key);
+            throw new IllegalArgumentException();
         }
 
-        return stringValue.trim();
+        String result = stringValue.trim();
+
+        if (result.length() > 200) {
+            throw new IllegalArgumentException();
+        }
+
+        return result;
     }
 
     private String optionalString(
@@ -283,11 +354,29 @@ public class ToolExecutionService {
         }
 
         if (!(value instanceof String stringValue)) {
-            throw new IllegalArgumentException(
-                    "Invalid string argument: " + key);
+            throw new IllegalArgumentException();
         }
 
-        return stringValue.trim();
+        String result = stringValue.trim();
+
+        if (result.length() > 500) {
+            throw new IllegalArgumentException();
+        }
+
+        return result;
+    }
+
+    private String requiredPriority(
+            Map<String, Object> input,
+            String key) {
+
+        String priority = requiredString(input, key).toUpperCase();
+
+        if (!VALID_PRIORITIES.contains(priority)) {
+            throw new IllegalArgumentException();
+        }
+
+        return priority;
     }
 
     private long requiredLong(
@@ -297,15 +386,13 @@ public class ToolExecutionService {
         Object value = input.get(key);
 
         if (!(value instanceof Number number)) {
-            throw new IllegalArgumentException(
-                    "Invalid numeric argument: " + key);
+            throw new IllegalArgumentException();
         }
 
         long id = number.longValue();
 
         if (id <= 0 || number.doubleValue() != id) {
-            throw new IllegalArgumentException(
-                    "Argument must be a positive integer: " + key);
+            throw new IllegalArgumentException();
         }
 
         return id;
@@ -323,11 +410,9 @@ public class ToolExecutionService {
 
         try {
             return LocalDate.parse(value);
-        } catch (Exception exception) {
-            throw new IllegalArgumentException(
-                    "Invalid date for " + key +
-                            ". Expected YYYY-MM-DD.");
+
+        } catch (DateTimeParseException exception) {
+            throw new IllegalArgumentException();
         }
     }
-
 }

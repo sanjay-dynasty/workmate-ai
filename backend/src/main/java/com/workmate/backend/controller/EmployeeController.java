@@ -1,9 +1,11 @@
+
 package com.workmate.backend.controller;
 
 import com.workmate.backend.dto.response.DocumentResponse;
 import com.workmate.backend.dto.response.EmployeeProfileResponse;
 import com.workmate.backend.dto.response.LeaveBalanceResponse;
 import com.workmate.backend.service.EmployeeService;
+
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -12,25 +14,40 @@ import java.util.List;
 @RequestMapping("/api")
 public class EmployeeController {
 
+    // Temporary development identity.
+    private static final String DEMO_EMPLOYEE_ID = "EMP001";
+
     private final EmployeeService employeeService;
 
     public EmployeeController(EmployeeService employeeService) {
         this.employeeService = employeeService;
     }
 
-    @GetMapping("/leaves/balance")
-    public LeaveBalanceResponse getLeaveBalance(
-            @RequestParam(defaultValue = "EMP001") String employeeId) {
+    // --------------------------------------------------
+    // 1. Get leave balance
+    // --------------------------------------------------
 
-        return employeeService.getLeaveBalance(employeeId);
+    @GetMapping("/leaves/balance")
+    public LeaveBalanceResponse getLeaveBalance() {
+
+        return employeeService.getLeaveBalance(
+                DEMO_EMPLOYEE_ID);
     }
+
+    // --------------------------------------------------
+    // 2. Get employee profile
+    // --------------------------------------------------
 
     @GetMapping("/employees/profile")
-    public EmployeeProfileResponse getEmployeeProfile(
-            @RequestParam(defaultValue = "EMP001") String employeeId) {
+    public EmployeeProfileResponse getEmployeeProfile() {
 
-        return employeeService.getEmployeeProfile(employeeId);
+        return employeeService.getEmployeeProfile(
+                DEMO_EMPLOYEE_ID);
     }
+
+    // --------------------------------------------------
+    // 3. Search company documents
+    // --------------------------------------------------
 
     @GetMapping("/documents/search")
     public List<DocumentResponse> searchDocuments(
