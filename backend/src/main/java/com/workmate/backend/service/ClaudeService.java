@@ -250,6 +250,13 @@ public class ClaudeService {
                                 "Claude API request failed after maximum retries");
         }
 
+        // Public wrapper for agentic tool calling
+        public JsonNode sendMessagesRequest(
+                        Map<String, Object> requestBody) {
+
+                return postForJson(requestBody);
+        }
+
         private long getRetryDelay(
                         RestClientResponseException exception,
                         int attempt) {
