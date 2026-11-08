@@ -16,6 +16,7 @@ public class AgenticChatController {
 
     public AgenticChatController(
             AgenticChatService agenticChatService) {
+
         this.agenticChatService = agenticChatService;
     }
 
@@ -23,6 +24,8 @@ public class AgenticChatController {
     public AgenticChatResponse chat(
             @Valid @RequestBody AgenticChatRequest request) {
 
-        return agenticChatService.chat(request.message());
+        return agenticChatService.chat(
+                request.conversationId(),
+                request.message());
     }
 }

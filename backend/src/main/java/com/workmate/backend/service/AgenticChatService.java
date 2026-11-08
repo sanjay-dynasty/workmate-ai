@@ -1,4 +1,3 @@
-
 package com.workmate.backend.service;
 
 import java.util.ArrayList;
@@ -7,13 +6,22 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import com.workmate.backend.dto.response.AgenticChatResponse;
 import com.workmate.backend.dto.response.ToolExecutionResult;
+
+import com.workmate.backend.entity.Conversation;
+import com.workmate.backend.entity.ConversationMessage;
+
+import com.workmate.backend.repository.ConversationMessageRepository;
+import com.workmate.backend.repository.ConversationRepository;
 
 @Service
 public class AgenticChatService {
@@ -24,7 +32,10 @@ public class AgenticChatService {
     private final WorkMateToolDefinitions toolDefinitions;
     private final ToolExecutionService toolExecutionService;
     private final WorkMateSystemPrompt workMateSystemPrompt;
+    private final ConversationRepository conversationRepository;
+    private final ConversationMessageRepository messageRepository;
     private final ObjectMapper objectMapper;
+
     private final String model;
     private final String trustedEmployeeId;
 
@@ -33,6 +44,8 @@ public class AgenticChatService {
             WorkMateToolDefinitions toolDefinitions,
             ToolExecutionService toolExecutionService,
             WorkMateSystemPrompt workMateSystemPrompt,
+            ConversationRepository conversationRepository,
+            ConversationMessageRepository messageRepository,
             ObjectMapper objectMapper,
             @Value("${anthropic.model}") String model,
             @Value("${workmate.demo-employee-id:EMP001}") String trustedEmployeeId) {
@@ -41,12 +54,16 @@ public class AgenticChatService {
         this.toolDefinitions = toolDefinitions;
         this.toolExecutionService = toolExecutionService;
         this.workMateSystemPrompt = workMateSystemPrompt;
+        this.conversationRepository = conversationRepository;
+        this.messageRepository = messageRepository;
         this.objectMapper = objectMapper;
         this.model = model;
         this.trustedEmployeeId = trustedEmployeeId;
     }
 
-    public AgenticChatResponse chat(String userMessage) {
+    public AgenticChatResponse chat(
+            Long conversationId,
+            String userMessage) {
 
         if (userMessage == null || userMessage.isBlank()) {
             throw new IllegalArgumentException(
@@ -55,23 +72,64 @@ public class AgenticChatService {
 
         if (trustedEmployeeId == null
                 || trustedEmployeeId.isBlank()) {
+
             throw new IllegalStateException(
                     "Trusted employee identity is not configured.");
         }
 
-        // Conversation history for this request.
-        List<Map<String, Object>> messages = new ArrayList<>();
+        // --------------------------------------------------
+        // 1. Create or retrieve the conversation
+        // --------------------------------------------------
+
+        Conversation conversation;
+
+        if (conversationId == null) {
+
+            conversation = conversationRepository.save(
+                    new Conversation(trustedEmployeeId));
+
+        } else {
+
+            conversation = conversationRepository
+                    .findByIdAndEmployeeId(
+                            conversationId,
+                            trustedEmployeeId)
+                    .orElseThrow(() -> new ResponseStatusException(
+                            HttpStatus.NOT_FOUND,
+                            "Conversation not found."));
+        }
+
+        // --------------------------------------------------
+        // 2. Load existing conversation history
+        // --------------------------------------------------
+
+        List<Map<String, Object>> messages = loadConversationHistory(conversation.getId());
+
+        // --------------------------------------------------
+        // 3. Save the latest user message
+        // --------------------------------------------------
+
+        saveMessage(
+                conversation,
+                "USER",
+                userMessage);
 
         messages.add(Map.of(
                 "role", "user",
                 "content", userMessage));
 
-        // Tool definitions available to Claude.
+        // --------------------------------------------------
+        // 4. Load Claude tool definitions
+        // --------------------------------------------------
+
         List<Map<String, Object>> tools = toolDefinitions.getTools();
 
         int totalToolCalls = 0;
 
-        // Initial request plus a maximum of five tool-use rounds.
+        // --------------------------------------------------
+        // 5. Agentic conversation loop
+        // --------------------------------------------------
+
         for (int requestNumber = 1; requestNumber <= MAX_TOOL_ROUNDS + 1; requestNumber++) {
 
             Map<String, Object> requestBody = new LinkedHashMap<>();
@@ -92,20 +150,32 @@ public class AgenticChatService {
             requestBody.put("tools", tools);
             requestBody.put("messages", messages);
 
-            // Send request to Claude.
+            // Send complete conversation history to Claude.
             JsonNode response = claudeService.sendMessagesRequest(requestBody);
 
             if (response == null || response.isNull()) {
+
                 throw new IllegalStateException(
                         "Empty response received from Claude.");
             }
 
             String stopReason = response.path("stop_reason").asText();
 
-            // Claude has completed its answer.
+            // --------------------------------------------------
+            // 6. Claude has completed the response
+            // --------------------------------------------------
+
             if ("end_turn".equals(stopReason)) {
 
+                JsonNode content = response.path("content");
+
+                saveMessage(
+                        conversation,
+                        "ASSISTANT",
+                        content);
+
                 return new AgenticChatResponse(
+                        conversation.getId(),
                         extractText(response),
                         response.path("model").asText(),
                         stopReason,
@@ -113,10 +183,14 @@ public class AgenticChatService {
                         requestNumber);
             }
 
-            // Claude wants the backend to execute tools.
+            // --------------------------------------------------
+            // 7. Claude requests tool execution
+            // --------------------------------------------------
+
             if ("tool_use".equals(stopReason)) {
 
                 if (requestNumber > MAX_TOOL_ROUNDS) {
+
                     throw new IllegalStateException(
                             "Maximum tool execution rounds exceeded.");
                 }
@@ -126,19 +200,25 @@ public class AgenticChatService {
                         new TypeReference<>() {
                         });
 
-                // Preserve Claude's complete assistant response,
+                // Preserve the complete assistant response,
                 // including text and tool_use blocks.
+                saveMessage(
+                        conversation,
+                        "ASSISTANT",
+                        assistantContent);
+
                 messages.add(Map.of(
                         "role", "assistant",
                         "content", assistantContent));
 
                 List<Map<String, Object>> toolResults = new ArrayList<>();
 
-                // Process every tool_use block in Claude's response.
+                // Process every tool_use block.
                 for (JsonNode block : response.path("content")) {
 
                     if (!"tool_use".equals(
                             block.path("type").asText())) {
+
                         continue;
                     }
 
@@ -146,7 +226,9 @@ public class AgenticChatService {
 
                     String toolUseId = block.path("id").asText();
 
-                    if (toolName.isBlank() || toolUseId.isBlank()) {
+                    if (toolName.isBlank()
+                            || toolUseId.isBlank()) {
+
                         throw new IllegalStateException(
                                 "Claude returned an invalid tool request.");
                     }
@@ -156,8 +238,8 @@ public class AgenticChatService {
                             new TypeReference<>() {
                             });
 
-                    // Execute the Java backend operation using
-                    // the server-controlled employee identity.
+                    // Execute the Java backend operation.
+                    // Employee identity comes from the server.
                     ToolExecutionResult result = toolExecutionService.execute(
                             toolName,
                             input,
@@ -165,19 +247,19 @@ public class AgenticChatService {
 
                     totalToolCalls++;
 
-                    // Convert the execution result into JSON.
                     String resultJson;
 
                     try {
+
                         resultJson = objectMapper.writeValueAsString(result);
 
                     } catch (Exception exception) {
+
                         throw new IllegalStateException(
                                 "Unable to serialize tool result.",
                                 exception);
                     }
 
-                    // Prepare Anthropic tool_result block.
                     Map<String, Object> resultBlock = new LinkedHashMap<>();
 
                     resultBlock.put("type", "tool_result");
@@ -192,24 +274,43 @@ public class AgenticChatService {
                 }
 
                 if (toolResults.isEmpty()) {
+
                     throw new IllegalStateException(
                             "Claude requested tool use but no valid "
                                     + "tool_use blocks were found.");
                 }
 
-                // Send all tool results back to Claude.
+                // Save tool results as a USER message.
+                // This is the required Anthropic conversation format.
+                saveMessage(
+                        conversation,
+                        "USER",
+                        toolResults);
+
                 messages.add(Map.of(
                         "role", "user",
                         "content", toolResults));
 
-                // Continue the agentic loop.
+                // Continue the loop so Claude can process
+                // the tool results and produce its final answer.
                 continue;
             }
 
-            // Claude refused the request.
+            // --------------------------------------------------
+            // 8. Claude refused the request
+            // --------------------------------------------------
+
             if ("refusal".equals(stopReason)) {
 
+                JsonNode content = response.path("content");
+
+                saveMessage(
+                        conversation,
+                        "ASSISTANT",
+                        content);
+
                 return new AgenticChatResponse(
+                        conversation.getId(),
                         extractText(response),
                         response.path("model").asText(),
                         stopReason,
@@ -224,6 +325,71 @@ public class AgenticChatService {
 
         throw new IllegalStateException(
                 "Agentic execution ended without a final answer.");
+    }
+
+    // --------------------------------------------------
+    // Load persisted conversation history
+    // --------------------------------------------------
+
+    private List<Map<String, Object>> loadConversationHistory(
+            Long conversationId) {
+
+        List<ConversationMessage> storedMessages = messageRepository
+                .findByConversationIdOrderByIdAsc(
+                        conversationId);
+
+        List<Map<String, Object>> messages = new ArrayList<>();
+
+        for (ConversationMessage storedMessage : storedMessages) {
+
+            try {
+
+                Object content = objectMapper.readValue(
+                        storedMessage.getContent(),
+                        Object.class);
+
+                messages.add(Map.of(
+                        "role", storedMessage.getRole().toLowerCase(),
+                        "content", content));
+
+            } catch (Exception exception) {
+
+                throw new IllegalStateException(
+                        "Unable to restore conversation message ID: "
+                                + storedMessage.getId(),
+                        exception);
+            }
+        }
+
+        return messages;
+    }
+
+    // --------------------------------------------------
+    // Persist a conversation message
+    // --------------------------------------------------
+
+    private void saveMessage(
+            Conversation conversation,
+            String role,
+            Object content) {
+
+        try {
+
+            String serializedContent = objectMapper.writeValueAsString(content);
+
+            ConversationMessage message = new ConversationMessage(
+                    conversation,
+                    role,
+                    serializedContent);
+
+            messageRepository.save(message);
+
+        } catch (Exception exception) {
+
+            throw new IllegalStateException(
+                    "Unable to save conversation message.",
+                    exception);
+        }
     }
 
     // --------------------------------------------------

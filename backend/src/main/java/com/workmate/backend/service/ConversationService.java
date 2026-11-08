@@ -19,112 +19,112 @@ import com.workmate.backend.repository.ConversationRepository;
 import lombok.RequiredArgsConstructor;
 
 @Service
-@RequiredArgsConstructor 
+@RequiredArgsConstructor
 public class ConversationService {
 
-    private static final Set<String> ALLOWED_ROLES = Set.of("USER", "ASSISTANT");
+        private static final Set<String> ALLOWED_ROLES = Set.of("USER", "ASSISTANT");
 
-    private final ConversationRepository conversationRepository;
-    private final ConversationMessageRepository messageRepository;
+        private final ConversationRepository conversationRepository;
+        private final ConversationMessageRepository messageRepository;
 
-    // Create a new conversation.
-    @Transactional
-    public ConversationResponse createConversation(String employeeId) {
+        // Create a new conversation.
+        @Transactional
+        public ConversationResponse createConversation(String employeeId) {
 
-        if (employeeId == null || employeeId.isBlank()) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "Employee ID is required.");
+                if (employeeId == null || employeeId.isBlank()) {
+                        throw new ResponseStatusException(
+                                        HttpStatus.BAD_REQUEST,
+                                        "Employee ID is required.");
+                }
+
+                Conversation conversation = new Conversation(employeeId.trim());
+
+                Conversation saved = conversationRepository.save(conversation);
+
+                return mapConversation(saved);
         }
 
-        Conversation conversation = new Conversation(employeeId.trim());
+        // Save a user or assistant message.
+        @Transactional
+        public ConversationMessageResponse addMessage(
+                        Long conversationId,
+                        CreateMessageRequest request) {
 
-        Conversation saved = conversationRepository.save(conversation);
+                Conversation conversation = conversationRepository.findById(conversationId)
+                                .orElseThrow(() -> new ResponseStatusException(
+                                                HttpStatus.NOT_FOUND,
+                                                "Conversation not found."));
 
-        return mapConversation(saved);
-    }
+                String role = request.role().trim().toUpperCase();
 
-    // Save a user or assistant message.
-    @Transactional
-    public ConversationMessageResponse addMessage(
-            Long conversationId,
-            CreateMessageRequest request) {
+                if (!ALLOWED_ROLES.contains(role)) {
+                        throw new ResponseStatusException(
+                                        HttpStatus.BAD_REQUEST,
+                                        "Role must be USER or ASSISTANT.");
+                }
 
-        Conversation conversation = conversationRepository.findById(conversationId)
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND,
-                        "Conversation not found."));
+                ConversationMessage message = new ConversationMessage(
+                                conversation,
+                                role,
+                                request.content().trim());
 
-        String role = request.role().trim().toUpperCase();
+                ConversationMessage saved = messageRepository.save(message);
 
-        if (!ALLOWED_ROLES.contains(role)) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "Role must be USER or ASSISTANT.");
+                return mapMessage(saved);
         }
 
-        ConversationMessage message = new ConversationMessage(
-                conversation,
-                role,
-                request.content().trim());
+        // Retrieve conversations for an employee.
+        @Transactional(readOnly = true)
+        public List<ConversationResponse> getConversations(String employeeId) {
 
-        ConversationMessage saved = messageRepository.save(message);
+                if (employeeId == null || employeeId.isBlank()) {
+                        throw new ResponseStatusException(
+                                        HttpStatus.BAD_REQUEST,
+                                        "Employee ID is required.");
+                }
 
-        return mapMessage(saved);
-    }
-
-    // Retrieve conversations for an employee.
-    @Transactional(readOnly = true)
-    public List<ConversationResponse> getConversations(String employeeId) {
-
-        if (employeeId == null || employeeId.isBlank()) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "Employee ID is required.");
+                return conversationRepository
+                                .findByEmployeeIdOrderByCreatedAtDesc(employeeId.trim())
+                                .stream()
+                                .map(this::mapConversation)
+                                .toList();
         }
 
-        return conversationRepository
-                .findByEmployeeIdOrderByCreatedAtDesc(employeeId.trim())
-                .stream()
-                .map(this::mapConversation)
-                .toList();
-    }
+        // Retrieve messages in chronological order.
+        @Transactional(readOnly = true)
+        public List<ConversationMessageResponse> getMessages(
+                        Long conversationId) {
 
-    // Retrieve messages in chronological order.
-    @Transactional(readOnly = true)
-    public List<ConversationMessageResponse> getMessages(
-            Long conversationId) {
+                if (!conversationRepository.existsById(conversationId)) {
+                        throw new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Conversation not found.");
+                }
 
-        if (!conversationRepository.existsById(conversationId)) {
-            throw new ResponseStatusException(
-                    HttpStatus.NOT_FOUND,
-                    "Conversation not found.");
+                return messageRepository
+                                .findByConversationIdOrderByIdAsc(conversationId)
+                                .stream()
+                                .map(this::mapMessage)
+                                .toList();
         }
 
-        return messageRepository
-                .findByConversationIdOrderByCreatedAtAsc(conversationId)
-                .stream()
-                .map(this::mapMessage)
-                .toList();
-    }
+        private ConversationResponse mapConversation(
+                        Conversation conversation) {
 
-    private ConversationResponse mapConversation(
-            Conversation conversation) {
+                return new ConversationResponse(
+                                conversation.getId(),
+                                conversation.getEmployeeId(),
+                                conversation.getCreatedAt());
+        }
 
-        return new ConversationResponse(
-                conversation.getId(),
-                conversation.getEmployeeId(),
-                conversation.getCreatedAt());
-    }
+        private ConversationMessageResponse mapMessage(
+                        ConversationMessage message) {
 
-    private ConversationMessageResponse mapMessage(
-            ConversationMessage message) {
-
-        return new ConversationMessageResponse(
-                message.getId(),
-                message.getConversation().getId(),
-                message.getRole(),
-                message.getContent(),
-                message.getCreatedAt());
-    }
+                return new ConversationMessageResponse(
+                                message.getId(),
+                                message.getConversation().getId(),
+                                message.getRole(),
+                                message.getContent(),
+                                message.getCreatedAt());
+        }
 }

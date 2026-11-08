@@ -6,8 +6,9 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 import com.workmate.backend.entity.ConversationMessage;
 
-public interface ConversationMessageRepository extends JpaRepository<ConversationMessage, Long> {
+public interface ConversationMessageRepository
+        extends JpaRepository<ConversationMessage, Long> {
 
-    List<ConversationMessage> findByConversationIdOrderByCreatedAtAsc(Long conversationId);
-
+    List<ConversationMessage> findByConversationIdOrderByIdAsc(
+            Long conversationId);
 }
