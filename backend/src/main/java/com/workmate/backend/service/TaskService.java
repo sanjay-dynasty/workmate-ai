@@ -1,53 +1,58 @@
 package com.workmate.backend.service;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.workmate.backend.dto.request.CreateTaskRequest;
 import com.workmate.backend.dto.response.TaskResponse;
+import com.workmate.backend.entity.Task;
+import com.workmate.backend.repository.TaskRepository;
+
+import jakarta.annotation.PostConstruct;
 
 @Service
+@Transactional
 public class TaskService {
 
-    private final ConcurrentHashMap<Long, TaskResponse> tasks = new ConcurrentHashMap<>();
+    private final TaskRepository taskRepository;
 
-    private final AtomicLong idGenerator = new AtomicLong(0);
+    public TaskService(TaskRepository taskRepository) {
+        this.taskRepository = taskRepository;
+    }
 
-    public TaskService() {
+    // Initialize demo data only when the task table is empty.
+    @PostConstruct
+    public void initializeMockTasks() {
+
+        if (taskRepository.count() > 0) {
+            return;
+        }
+
         createMockTask(
                 "Complete Java preparation",
                 "Revise Core Java & Java 17 concepts",
                 "EMP001",
                 "HIGH",
-                LocalDate.now().plusDays(2)
-
-        );
+                LocalDate.now().plusDays(2));
 
         createMockTask(
                 "Complete Spring Boot training",
                 "Study Spring Boot and REST APIs",
                 "EMP001",
                 "MEDIUM",
-                LocalDate.now().plusDays(5)
-
-        );
+                LocalDate.now().plusDays(5));
 
         createMockTask(
                 "Review microservices architecture",
                 "Understand service communication",
                 "EMP001",
                 "LOW",
-                LocalDate.now().plusDays(7)
-
-        );
+                LocalDate.now().plusDays(7));
     }
 
     private void createMockTask(
@@ -57,97 +62,113 @@ public class TaskService {
             String priority,
             LocalDate dueDate) {
 
-        Long id = idGenerator.incrementAndGet();
+        Task task = new Task();
 
-        tasks.put(id, new TaskResponse(
-                id,
-                taskName,
-                description,
-                employeeId,
-                priority,
-                "PENDING",
-                dueDate,
-                LocalDateTime.now()));
+        task.setTaskName(taskName);
+        task.setDescription(description);
+        task.setEmployeeId(employeeId);
+        task.setPriority(priority);
+        task.setStatus("PENDING");
+        task.setDueDate(dueDate);
+
+        taskRepository.save(task);
     }
 
+    // Get all tasks belonging to an employee.
+    @Transactional(readOnly = true)
     public List<TaskResponse> getAllTasks(String employeeId) {
 
-        return tasks.values()
+        return taskRepository.findByEmployeeIdOrderByIdAsc(employeeId)
                 .stream()
-                .filter(task -> task.employeeId().equals(employeeId))
-                .sorted(Comparator.comparing(TaskResponse::id))
+                .map(this::toResponse)
                 .toList();
     }
 
+    // Create a new task.
     public TaskResponse createTask(CreateTaskRequest request) {
 
         validatePriority(request.priority());
 
-        Long id = idGenerator.incrementAndGet();
+        Task task = new Task();
 
-        TaskResponse task = new TaskResponse(id,
-                request.taskName(),
-                request.description(),
-                request.employeeId(),
-                request.priority() == null ? "MEDIUM" : request.priority(),
-                "PENDING",
-                request.dueDate(),
-                LocalDateTime.now()
+        task.setTaskName(request.taskName());
+        task.setDescription(request.description());
+        task.setEmployeeId(request.employeeId());
+        task.setPriority(normalizePriority(request.priority()));
+        task.setStatus("PENDING");
+        task.setDueDate(request.dueDate());
 
-        );
+        Task savedTask = taskRepository.save(task);
 
-        tasks.put(id, task);
-
-        return task;
+        return toResponse(savedTask);
     }
 
+    // Get task by ID.
+    @Transactional(readOnly = true)
     public TaskResponse getTaskById(Long id) {
 
-        TaskResponse task = tasks.get(id);
+        Task task = taskRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Task not found: " + id));
 
-        if (task == null) {
-            throw new ResponseStatusException(
-                    HttpStatus.NOT_FOUND,
-                    "Task not found: " + id);
-        }
-
-        return task;
+        return toResponse(task);
     }
 
+    // Update an existing task.
     public TaskResponse updateTask(
             Long id,
             CreateTaskRequest request) {
 
-        TaskResponse existingTask = getTaskById(id);
+        Task existingTask = taskRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Task not found: " + id));
 
         validatePriority(request.priority());
 
-        TaskResponse updatedTask = new TaskResponse(
-                id,
-                request.taskName(),
-                request.description(),
-                existingTask.employeeId(),
-                request.priority() == null
-                        ? existingTask.priority()
-                        : request.priority(),
-                existingTask.status(),
-                request.dueDate(),
-                existingTask.createdAt());
+        existingTask.setTaskName(request.taskName());
+        existingTask.setDescription(request.description());
 
-        tasks.put(id, updatedTask);
+        if (request.priority() != null) {
+            existingTask.setPriority(normalizePriority(request.priority()));
+        }
 
-        return updatedTask;
+        existingTask.setDueDate(request.dueDate());
+
+        Task updatedTask = taskRepository.save(existingTask);
+
+        return toResponse(updatedTask);
     }
 
+    // Delete a task.
     public void deleteTask(Long id) {
 
-        TaskResponse removed = tasks.remove(id);
-
-        if (removed == null) {
+        if (!taskRepository.existsById(id)) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND,
                     "Task not found: " + id);
         }
+
+        taskRepository.deleteById(id);
+    }
+
+    private TaskResponse toResponse(Task task) {
+
+        return new TaskResponse(
+                task.getId(),
+                task.getTaskName(),
+                task.getDescription(),
+                task.getEmployeeId(),
+                task.getPriority(),
+                task.getStatus(),
+                task.getDueDate(),
+                task.getCreatedAt());
+    }
+
+    private String normalizePriority(String priority) {
+
+        return priority == null ? "MEDIUM" : priority.toUpperCase();
     }
 
     private void validatePriority(String priority) {
@@ -164,5 +185,4 @@ public class TaskService {
                     "Priority must be HIGH, MEDIUM or LOW");
         }
     }
-
 }
