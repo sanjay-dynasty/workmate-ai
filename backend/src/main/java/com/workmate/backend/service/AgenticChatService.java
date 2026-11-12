@@ -212,25 +212,35 @@ public class AgenticChatService {
                         requestBody.put("max_tokens", 1500);
 
                         // --------------------------------------------------
-                        // 9. Build system prompt with employee context
+                        // 9. Build system prompt with explicit prompt caching
                         // --------------------------------------------------
 
-                        StringBuilder systemPromptBuilder = new StringBuilder(
-                                        workMateSystemPrompt.getChatSystemPrompt());
+                        List<Map<String, Object>> systemBlocks = new ArrayList<>();
 
-                        systemPromptBuilder
-                                        .append("\n\n<employee_context>")
+                        // Static instructions: this block is eligible for caching.
+                        Map<String, Object> staticSystemBlock = new LinkedHashMap<>();
+                        staticSystemBlock.put("type", "text");
+                        staticSystemBlock.put(
+                                        "text",
+                                        workMateSystemPrompt.getChatSystemPrompt());
+                        staticSystemBlock.put(
+                                        "cache_control",
+                                        Map.of("type", "ephemeral"));
+
+                        systemBlocks.add(staticSystemBlock);
+
+                        // Dynamic employee context: do not cache this block.
+                        StringBuilder dynamicContext = new StringBuilder();
+
+                        dynamicContext
+                                        .append("<employee_context>")
                                         .append("\nCurrent demo employee ID: ")
                                         .append(trustedEmployeeId)
                                         .append("\nUse this employee ID whenever a tool requires employeeId.")
                                         .append("\nDo not ask the user for their employee ID.")
                                         .append("\n</employee_context>");
 
-                        // --------------------------------------------------
-                        // Add persistent employee memory
-                        // --------------------------------------------------
-
-                        systemPromptBuilder
+                        dynamicContext
                                         .append("\n\n<employee_memory>")
                                         .append("\nThe following information represents persistent employee preferences and goals.")
                                         .append("\nUse it only when relevant to the current request.")
@@ -240,14 +250,9 @@ public class AgenticChatService {
                                         .append(employeeMemoryJson)
                                         .append("\n</employee_memory>");
 
-                        // --------------------------------------------------
-                        // 10. Add persistent conversation summary
-                        // --------------------------------------------------
+                        if (conversationSummary != null && !conversationSummary.isBlank()) {
 
-                        if (conversationSummary != null
-                                        && !conversationSummary.isBlank()) {
-
-                                systemPromptBuilder
+                                dynamicContext
                                                 .append("\n\n<conversation_summary>")
                                                 .append("\nThis is a summary of earlier conversation history.")
                                                 .append("\nUse it to understand references to previous discussions.")
@@ -258,9 +263,14 @@ public class AgenticChatService {
                                                 .append("\n</conversation_summary>");
                         }
 
-                        String systemPrompt = systemPromptBuilder.toString();
+                        Map<String, Object> dynamicSystemBlock = new LinkedHashMap<>();
+                        dynamicSystemBlock.put("type", "text");
+                        dynamicSystemBlock.put("text", dynamicContext.toString());
 
-                        requestBody.put("system", systemPrompt);
+                        systemBlocks.add(dynamicSystemBlock);
+
+                        // Send system as content blocks instead of a plain string.
+                        requestBody.put("system", systemBlocks);
 
                         requestBody.put("tools", tools);
 
@@ -268,8 +278,14 @@ public class AgenticChatService {
                         // 11. Select context using ContextWindowService
                         // --------------------------------------------------
 
+                        // Build a text representation for context token estimation.
+                        // The actual Claude request still uses the structured systemBlocks.
+                        String systemPromptForEstimation = workMateSystemPrompt.getChatSystemPrompt()
+                                        + "\n\n"
+                                        + dynamicContext;
+
                         List<Map<String, Object>> selectedMessages = contextWindowService.selectContext(
-                                        systemPrompt,
+                                        systemPromptForEstimation,
                                         messages);
 
                         System.out.println(
@@ -293,6 +309,32 @@ public class AgenticChatService {
                                 throw new IllegalStateException(
                                                 "Empty response received from Claude.");
                         }
+
+                        // --------------------------------------------------
+                        // Capture Anthropic token and prompt-cache metrics
+                        // --------------------------------------------------
+
+                        JsonNode usage = response.path("usage");
+
+                        int inputTokens = usage.path("input_tokens").asInt(0);
+                        int outputTokens = usage.path("output_tokens").asInt(0);
+
+                        int cacheCreationInputTokens = usage
+                                        .path("cache_creation_input_tokens")
+                                        .asInt(0);
+
+                        int cacheReadInputTokens = usage
+                                        .path("cache_read_input_tokens")
+                                        .asInt(0);
+
+                        System.out.println("========== CLAUDE USAGE ==========");
+                        System.out.println("Input tokens: " + inputTokens);
+                        System.out.println("Output tokens: " + outputTokens);
+                        System.out.println(
+                                        "Cache creation tokens: " + cacheCreationInputTokens);
+                        System.out.println(
+                                        "Cache read tokens: " + cacheReadInputTokens);
+                        System.out.println("==================================");
 
                         String stopReason = response.path("stop_reason").asText();
 
