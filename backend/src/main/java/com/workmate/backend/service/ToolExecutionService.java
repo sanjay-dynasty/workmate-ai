@@ -10,6 +10,7 @@ import java.util.Set;
 import org.springframework.stereotype.Service;
 
 import com.workmate.backend.dto.request.CreateTaskRequest;
+import com.workmate.backend.dto.response.EmployeeMemoryResponse;
 import com.workmate.backend.dto.response.TaskResponse;
 import com.workmate.backend.dto.response.ToolExecutionResult;
 
@@ -18,31 +19,31 @@ public class ToolExecutionService {
 
     private final TaskService taskService;
     private final EmployeeService employeeService;
+    private final EmployeeMemoryService employeeMemoryService;
 
     private static final Set<String> EMPLOYEE_SCOPED_TOOLS = Set.of(
             "get_pending_tasks",
             "create_task",
             "update_task",
             "get_leave_balance",
-            "get_employee_profile");
+            "get_employee_profile",
+            "update_employee_preferences",
+            "add_employee_goal",
+            "remove_employee_goal");
 
     private static final Set<String> VALID_PRIORITIES = Set.of(
             "HIGH", "MEDIUM", "LOW");
 
     public ToolExecutionService(
             TaskService taskService,
-            EmployeeService employeeService) {
+            EmployeeService employeeService,
+            EmployeeMemoryService employeeMemoryService) {
 
         this.taskService = taskService;
         this.employeeService = employeeService;
+        this.employeeMemoryService = employeeMemoryService;
     }
 
-    /**
-     * Execute without trusted identity.
-     *
-     * Employee-scoped tools are rejected through this overload.
-     * Use the trusted identity overload for employee operations.
-     */
     public ToolExecutionResult execute(
             String toolName,
             Map<String, Object> input) {
@@ -50,9 +51,6 @@ public class ToolExecutionService {
         return execute(toolName, input, null);
     }
 
-    /**
-     * Execute a Claude tool using server-controlled employee identity.
-     */
     public ToolExecutionResult execute(
             String toolName,
             Map<String, Object> input,
@@ -61,15 +59,10 @@ public class ToolExecutionService {
         String safeToolName = toolName == null ? "unknown" : toolName;
 
         try {
-            if (toolName == null || toolName.isBlank()) {
+            if (toolName == null || toolName.isBlank() || input == null) {
                 throw new IllegalArgumentException();
             }
 
-            if (input == null) {
-                throw new IllegalArgumentException();
-            }
-
-            // Reject unsupported tools before processing arguments.
             if (!isSupportedTool(toolName)) {
                 throw new IllegalArgumentException();
             }
@@ -107,6 +100,15 @@ public class ToolExecutionService {
                 case "get_employee_profile" ->
                     getEmployeeProfile(safeInput);
 
+                case "update_employee_preferences" ->
+                    updateEmployeePreferences(safeInput);
+
+                case "add_employee_goal" ->
+                    addEmployeeGoal(safeInput);
+
+                case "remove_employee_goal" ->
+                    removeEmployeeGoal(safeInput);
+
                 default -> throw new IllegalArgumentException();
             };
 
@@ -120,7 +122,7 @@ public class ToolExecutionService {
 
         } catch (Exception exception) {
 
-            // Do not expose internal exception messages to Claude or clients.
+            // Do not expose internal exception messages.
             return ToolExecutionResult.failure(
                     safeToolName,
                     "The requested operation could not be completed.");
@@ -135,7 +137,10 @@ public class ToolExecutionService {
                 "update_task",
                 "get_leave_balance",
                 "search_documents",
-                "get_employee_profile").contains(toolName);
+                "get_employee_profile",
+                "update_employee_preferences",
+                "add_employee_goal",
+                "remove_employee_goal").contains(toolName);
     }
 
     // --------------------------------------------------
@@ -226,7 +231,6 @@ public class ToolExecutionService {
         String description = optionalString(input, "description");
         LocalDate dueDate = optionalDate(input, "dueDate");
 
-        // Verify that the task belongs to the trusted employee.
         TaskResponse existingTask = taskService.getTaskById(id);
 
         if (!existingTask.employeeId().equals(employeeId)) {
@@ -296,6 +300,101 @@ public class ToolExecutionService {
         String employeeId = requiredString(input, "employeeId");
 
         return employeeService.getEmployeeProfile(employeeId);
+    }
+
+    // --------------------------------------------------
+    // 7. Update employee preferences
+    // --------------------------------------------------
+
+    private EmployeeMemoryResponse updateEmployeePreferences(
+            Map<String, Object> input) {
+
+        validateArguments(
+                input,
+                Set.of("employeeId", "preferences"),
+                Set.of("employeeId", "preferences"));
+
+        String employeeId = requiredString(input, "employeeId");
+
+        Object rawPreferences = input.get("preferences");
+
+        if (!(rawPreferences instanceof Map<?, ?> rawMap)) {
+            throw new IllegalArgumentException();
+        }
+
+        if (rawMap.isEmpty() || rawMap.size() > 20) {
+            throw new IllegalArgumentException();
+        }
+
+        Map<String, Object> preferences = new HashMap<>();
+
+        for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+
+            if (!(entry.getKey() instanceof String key)
+                    || !key.matches("[A-Za-z][A-Za-z0-9]{0,49}")) {
+                throw new IllegalArgumentException();
+            }
+
+            Object value = entry.getValue();
+
+            if (value instanceof String stringValue) {
+
+                if (stringValue.isBlank() || stringValue.length() > 200) {
+                    throw new IllegalArgumentException();
+                }
+
+            } else if (!(value instanceof Number)
+                    && !(value instanceof Boolean)) {
+
+                throw new IllegalArgumentException();
+            }
+
+            preferences.put(key, value);
+        }
+
+        return employeeMemoryService.updatePreferences(
+                employeeId,
+                preferences);
+    }
+
+    // --------------------------------------------------
+    // 8. Add employee goal
+    // --------------------------------------------------
+
+    private EmployeeMemoryResponse addEmployeeGoal(
+            Map<String, Object> input) {
+
+        validateArguments(
+                input,
+                Set.of("employeeId", "goal"),
+                Set.of("employeeId", "goal"));
+
+        String employeeId = requiredString(input, "employeeId");
+        String goal = requiredString(input, "goal");
+
+        return employeeMemoryService.addGoal(
+                employeeId,
+                goal);
+    }
+
+    // --------------------------------------------------
+    // 9. Remove employee goal
+    // --------------------------------------------------
+
+    private EmployeeMemoryResponse removeEmployeeGoal(
+            Map<String, Object> input) {
+
+        validateArguments(
+                input,
+                Set.of("employeeId", "goal"),
+                Set.of("employeeId", "goal"));
+
+        String employeeId = requiredString(input, "employeeId");
+        String goal = requiredString(input, "goal");
+
+        return employeeMemoryService.removeGoal(
+                employeeId,
+                goal);
     }
 
     // --------------------------------------------------
